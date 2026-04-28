@@ -1,9 +1,6 @@
 """
 reporter.py — HTML + JSON 報告產生器
-測試結束後輸出完整報告，含三張折線圖：
-  1. Total Requests per Second (RPS + Failures/s)
-  2. Response Times P50 / P95 (ms)
-  3. Number of Users
+使用 Canvas 原生 API 畫折線圖，不依賴任何外部套件或 CDN
 """
 import json
 import time
@@ -24,53 +21,47 @@ def save_json(stats: StatsCollector, path: str = "report.json"):
 
 # ── HTML ────────────────────────────────────────────────────────────────────
 
-_HTML_TEMPLATE = """<!DOCTYPE html>
+_HTML = """<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PyLoad 負載測試報告</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {{
-    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3e;
-    --text: #e2e8f0; --muted: #64748b; --accent: #6366f1;
-    --green: #22c55e; --yellow: #eab308; --red: #ef4444;
-    --cyan: #06b6d4; --orange: #f97316;
+    --bg:#0f1117;--surface:#1a1d27;--border:#2a2d3e;
+    --text:#e2e8f0;--muted:#64748b;--accent:#6366f1;
+    --green:#22c55e;--yellow:#eab308;--red:#ef4444;--cyan:#06b6d4;
   }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; padding: 2rem; }}
-  h1 {{ font-size: 1.8rem; font-weight: 700; color: var(--accent); margin-bottom: 0.25rem; }}
-  .meta {{ color: var(--muted); font-size: 0.85rem; margin-bottom: 2rem; }}
-  .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2.5rem; }}
-  .kpi {{ background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.2rem 1.5rem; }}
-  .kpi-label {{ font-size: 0.75rem; text-transform: uppercase; color: var(--muted); letter-spacing: .05em; }}
-  .kpi-value {{ font-size: 2rem; font-weight: 700; margin-top: 0.25rem; }}
-  .kpi-value.good {{ color: var(--green); }}
-  .kpi-value.warn {{ color: var(--yellow); }}
-  .kpi-value.bad  {{ color: var(--red); }}
-  .kpi-value.neutral {{ color: var(--cyan); }}
-
-  /* 圖表區塊 */
-  .charts-grid {{ display: grid; grid-template-columns: 1fr; gap: 1.5rem; margin-bottom: 2.5rem; }}
-  .chart-card {{ background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; }}
-  .chart-title {{ font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: var(--text); }}
-  .chart-wrap {{ position: relative; height: 220px; }}
-
-  /* 統計表格 */
-  .section-title {{ font-size: 1rem; font-weight: 600; color: var(--text); margin-bottom: .75rem; margin-top: 2rem; }}
-  table {{ width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }}
-  thead {{ background: #12151f; }}
-  th {{ padding: .75rem 1rem; text-align: right; font-size: .75rem; text-transform: uppercase; color: var(--muted); letter-spacing: .05em; white-space: nowrap; }}
-  th:first-child {{ text-align: left; }}
-  td {{ padding: .7rem 1rem; font-size: .875rem; text-align: right; border-top: 1px solid var(--border); }}
-  td:first-child {{ text-align: left; font-weight: 600; }}
-  tr:hover td {{ background: rgba(99,102,241,.06); }}
-  .pill {{ display: inline-block; padding: .15em .6em; border-radius: 9999px; font-size: .75rem; font-weight: 600; }}
-  .pill.good {{ background: rgba(34,197,94,.15); color: var(--green); }}
-  .pill.warn {{ background: rgba(234,179,8,.15);  color: var(--yellow); }}
-  .pill.bad  {{ background: rgba(239,68,68,.15);  color: var(--red); }}
-  footer {{ margin-top: 3rem; text-align: center; color: var(--muted); font-size: .8rem; }}
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;padding:2rem}}
+  h1{{font-size:1.8rem;font-weight:700;color:var(--accent);margin-bottom:.25rem}}
+  .meta{{color:var(--muted);font-size:.85rem;margin-bottom:2rem}}
+  .kpi-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:1rem;margin-bottom:2.5rem}}
+  .kpi{{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.2rem 1.5rem}}
+  .kpi-label{{font-size:.75rem;text-transform:uppercase;color:var(--muted);letter-spacing:.05em}}
+  .kpi-value{{font-size:2rem;font-weight:700;margin-top:.25rem}}
+  .neutral{{color:var(--cyan)}}.good{{color:var(--green)}}.warn{{color:var(--yellow)}}.bad{{color:var(--red)}}
+  .charts-grid{{display:grid;grid-template-columns:1fr;gap:1.5rem;margin-bottom:2.5rem}}
+  .chart-card{{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.5rem}}
+  .chart-title{{font-size:1rem;font-weight:600;margin-bottom:1rem}}
+  canvas{{width:100%!important;display:block}}
+  .legend{{display:flex;gap:1.2rem;margin-top:.6rem;flex-wrap:wrap}}
+  .legend-item{{display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--muted)}}
+  .legend-dot{{width:10px;height:10px;border-radius:50%;flex-shrink:0}}
+  .section-title{{font-size:1rem;font-weight:600;margin-bottom:.75rem;margin-top:2rem}}
+  table{{width:100%;border-collapse:collapse;background:var(--surface);border-radius:10px;overflow:hidden;border:1px solid var(--border)}}
+  thead{{background:#12151f}}
+  th{{padding:.75rem 1rem;text-align:right;font-size:.75rem;text-transform:uppercase;color:var(--muted);letter-spacing:.05em;white-space:nowrap}}
+  th:first-child{{text-align:left}}
+  td{{padding:.7rem 1rem;font-size:.875rem;text-align:right;border-top:1px solid var(--border)}}
+  td:first-child{{text-align:left;font-weight:600}}
+  tr:hover td{{background:rgba(99,102,241,.06)}}
+  .pill{{display:inline-block;padding:.15em .6em;border-radius:9999px;font-size:.75rem;font-weight:600}}
+  .pill.good{{background:rgba(34,197,94,.15);color:var(--green)}}
+  .pill.warn{{background:rgba(234,179,8,.15);color:var(--yellow)}}
+  .pill.bad{{background:rgba(239,68,68,.15);color:var(--red)}}
+  footer{{margin-top:3rem;text-align:center;color:var(--muted);font-size:.8rem}}
 </style>
 </head>
 <body>
@@ -85,19 +76,29 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="kpi"><div class="kpi-label">執行時長</div><div class="kpi-value neutral">{elapsed_sec}s</div></div>
 </div>
 
-<!-- 折線圖區 -->
 <div class="charts-grid">
   <div class="chart-card">
     <div class="chart-title">Total Requests per Second</div>
-    <div class="chart-wrap"><canvas id="chartRps"></canvas></div>
+    <canvas id="c1" height="200"></canvas>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#22c55e"></div>RPS</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div>Failures/s</div>
+    </div>
   </div>
   <div class="chart-card">
     <div class="chart-title">Response Times (ms)</div>
-    <div class="chart-wrap"><canvas id="chartRt"></canvas></div>
+    <canvas id="c2" height="200"></canvas>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#eab308"></div>P50</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#a855f7"></div>P95</div>
+    </div>
   </div>
   <div class="chart-card">
     <div class="chart-title">Number of Users</div>
-    <div class="chart-wrap"><canvas id="chartUsers"></canvas></div>
+    <canvas id="c3" height="200"></canvas>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#06b6d4"></div>Users</div>
+    </div>
   </div>
 </div>
 
@@ -115,62 +116,118 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <footer>PyLoad — Python 輕量級負載測試工具 | {generated_at}</footer>
 
 <script>
-const ts = {timeseries_json};
-const labels = ts.labels.map(t => t + 's');
+const TS = {timeseries_json};
 
-const chartDefaults = {{
-  responsive: true,
-  maintainAspectRatio: false,
-  animation: false,
-  plugins: {{ legend: {{ labels: {{ color: '#94a3b8', boxWidth: 12, padding: 16 }} }} }},
-  scales: {{
-    x: {{ ticks: {{ color: '#64748b', maxTicksLimit: 12 }}, grid: {{ color: '#1e2235' }} }},
-    y: {{ ticks: {{ color: '#64748b' }}, grid: {{ color: '#1e2235' }}, beginAtZero: true }}
+// ── 純 Canvas 折線圖 ────────────────────────────────────────────────────────
+function drawChart(canvasId, datasets, opts) {{
+  const canvas = document.getElementById(canvasId);
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.parentElement.clientWidth - 48;  // padding
+  const H = parseInt(canvas.getAttribute('height'));
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const PAD = {{ top: 16, right: 20, bottom: 36, left: 52 }};
+  const pw = W - PAD.left - PAD.right;
+  const ph = H - PAD.top  - PAD.bottom;
+
+  // 合併所有資料求 max/min
+  const allVals = datasets.flatMap(d => d.data).filter(v => v != null);
+  if (!allVals.length) {{
+    ctx.fillStyle = '#64748b';
+    ctx.font = '13px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('（無資料）', W/2, H/2);
+    return;
   }}
-}};
+  const yMin = 0;
+  const yMax = Math.max(...allVals) * 1.15 || 1;
+  const n    = TS.labels.length;
 
-// 1. RPS + Failures/s
-new Chart(document.getElementById('chartRps'), {{
-  type: 'line',
-  data: {{
-    labels,
-    datasets: [
-      {{ label: 'RPS', data: ts.rps, borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.08)',
-         borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 }},
-      {{ label: 'Failures/s', data: ts.failures_per_sec, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.08)',
-         borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 }}
-    ]
-  }},
-  options: chartDefaults
-}});
+  function toX(i)   {{ return PAD.left + (i / Math.max(n - 1, 1)) * pw; }}
+  function toY(v)   {{ return PAD.top  + (1 - (v - yMin) / (yMax - yMin)) * ph; }}
 
-// 2. P50 + P95 Response Time
-new Chart(document.getElementById('chartRt'), {{
-  type: 'line',
-  data: {{
-    labels,
-    datasets: [
-      {{ label: 'P50 (ms)', data: ts.p50, borderColor: '#eab308', backgroundColor: 'rgba(234,179,8,0.08)',
-         borderWidth: 2, pointRadius: 0, fill: false, tension: 0.3 }},
-      {{ label: 'P95 (ms)', data: ts.p95, borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.08)',
-         borderWidth: 2, pointRadius: 0, fill: false, tension: 0.3 }}
-    ]
-  }},
-  options: chartDefaults
-}});
+  // 格線
+  ctx.strokeStyle = '#1e2235';
+  ctx.lineWidth = 1;
+  const gridLines = 5;
+  for (let g = 0; g <= gridLines; g++) {{
+    const y = PAD.top + (g / gridLines) * ph;
+    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + pw, y); ctx.stroke();
+    const val = yMax - (g / gridLines) * (yMax - yMin);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '11px system-ui';
+    ctx.textAlign = 'right';
+    ctx.fillText(val >= 1000 ? (val/1000).toFixed(1)+'k' : val.toFixed(val < 10 ? 1 : 0), PAD.left - 6, y + 4);
+  }}
 
-// 3. Number of Users
-new Chart(document.getElementById('chartUsers'), {{
-  type: 'line',
-  data: {{
-    labels,
-    datasets: [
-      {{ label: 'Users', data: ts.users, borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,0.12)',
-         borderWidth: 2, pointRadius: 0, fill: true, tension: 0.1, stepped: true }}
-    ]
-  }},
-  options: chartDefaults
-}});
+  // X 軸標籤（最多 10 個）
+  ctx.fillStyle = '#64748b';
+  ctx.font = '11px system-ui';
+  ctx.textAlign = 'center';
+  const step = Math.max(1, Math.floor(n / 10));
+  for (let i = 0; i < n; i += step) {{
+    ctx.fillText(TS.labels[i] + 's', toX(i), H - PAD.bottom + 16);
+  }}
+
+  // 各資料集
+  datasets.forEach(ds => {{
+    if (!ds.data.length) return;
+
+    // fill
+    if (ds.fill) {{
+      ctx.beginPath();
+      ctx.moveTo(toX(0), toY(ds.data[0]));
+      for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(ds.data[i]));
+      ctx.lineTo(toX(n-1), PAD.top + ph);
+      ctx.lineTo(toX(0),   PAD.top + ph);
+      ctx.closePath();
+      ctx.fillStyle = ds.fillColor || 'rgba(255,255,255,0.04)';
+      ctx.fill();
+    }}
+
+    // line
+    ctx.beginPath();
+    ctx.strokeStyle = ds.color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    if (ds.stepped) {{
+      for (let i = 0; i < n; i++) {{
+        if (i === 0) ctx.moveTo(toX(i), toY(ds.data[i]));
+        else {{
+          ctx.lineTo(toX(i), toY(ds.data[i-1]));
+          ctx.lineTo(toX(i), toY(ds.data[i]));
+        }}
+      }}
+    }} else {{
+      ctx.moveTo(toX(0), toY(ds.data[0]));
+      for (let i = 1; i < n; i++) ctx.lineTo(toX(i), toY(ds.data[i]));
+    }}
+    ctx.stroke();
+  }});
+
+  // 外框
+  ctx.strokeStyle = '#2a2d3e';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(PAD.left, PAD.top, pw, ph);
+}}
+
+drawChart('c1', [
+  {{ data: TS.rps,              color: '#22c55e', fill: true, fillColor: 'rgba(34,197,94,0.08)' }},
+  {{ data: TS.failures_per_sec, color: '#ef4444', fill: true, fillColor: 'rgba(239,68,68,0.08)' }},
+]);
+drawChart('c2', [
+  {{ data: TS.p50, color: '#eab308' }},
+  {{ data: TS.p95, color: '#a855f7' }},
+]);
+drawChart('c3', [
+  {{ data: TS.users, color: '#06b6d4', fill: true, fillColor: 'rgba(6,182,212,0.10)', stepped: true }},
+]);
 </script>
 </body>
 </html>"""
@@ -183,8 +240,8 @@ _ROW_TEMPLATE = """<tr>
 
 
 def _err_class(rate: float) -> str:
-    if rate == 0:   return "good"
-    if rate < 5:    return "warn"
+    if rate == 0: return "good"
+    if rate < 5:  return "warn"
     return "bad"
 
 
@@ -207,14 +264,13 @@ def save_html(
             p95_ms=t["p95_ms"], p99_ms=t["p99_ms"], max_ms=t["max_ms"],
         )
 
-    # 時間序列資料（若無則給空資料）
     if timeseries:
         ts_data = timeseries.chart_data()
     else:
         ts_data = {"labels": [], "rps": [], "failures_per_sec": [], "p50": [], "p95": [], "users": []}
 
     err_rate = snap["overall_error_rate"]
-    html = _HTML_TEMPLATE.format(
+    html = _HTML.format(
         generated_at=generated_at,
         elapsed_sec=snap["elapsed_sec"],
         host=host or "(未指定)",

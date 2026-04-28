@@ -1,6 +1,10 @@
 """
 engine.py — 負載引擎
-使用 ThreadPoolExecutor 模擬多使用者並發，支援 spawn rate
+針對同機測試優化：
+  - 每個 user 獨立 Session，但 pool_size 對齊 num_users
+  - spawn_rate 預設可以很大，同機不需要暖機斜坡
+  - think_time = 0 時跳過 sleep，不浪費 CPU
+  - max_requests：打完 N 筆就自動停止
 """
 import time
 import threading
@@ -8,7 +12,7 @@ import itertools
 from concurrent.futures import ThreadPoolExecutor
 from typing import Type
 
-from .user import HttpUser
+from .user import HttpUser, _make_session
 from .stats import StatsCollector
 
 
@@ -23,18 +27,22 @@ class LoadEngine:
         user_class: Type[HttpUser],
         stats: StatsCollector,
         num_users: int,
-        spawn_rate: float,       # users per second
-        run_time: float,         # 總執行秒數，0 = 無限
+        spawn_rate: float,      # users per second
+        run_time: float,        # 總執行秒數，0 = 無限
+        max_requests: int = 0,  # 打完 N 筆就停，0 = 不限制
     ):
         self.user_class = user_class
         self.stats = stats
         self.num_users = num_users
         self.spawn_rate = spawn_rate
         self.run_time = run_time
+        self.max_requests = max_requests
 
         self._stop_event = threading.Event()
         self._active_users = 0
         self._users_lock = threading.Lock()
+        self._request_count = 0       # 已完成請求數（含失敗）
+        self._request_lock = threading.Lock()
         self._executor: ThreadPoolExecutor = None
 
     # ── 公開介面 ──────────────────────────────────────────────
@@ -43,11 +51,9 @@ class LoadEngine:
         self.stats.start()
         self._executor = ThreadPoolExecutor(max_workers=self.num_users + 10)
 
-        # Spawn 執行緒：依 spawn_rate 逐漸加入使用者
         spawner = threading.Thread(target=self._spawn_loop, daemon=True)
         spawner.start()
 
-        # 若有 run_time，計時結束後停止
         if self.run_time > 0:
             timer = threading.Thread(
                 target=self._run_timer, args=(self.run_time,), daemon=True
@@ -73,10 +79,24 @@ class LoadEngine:
     def is_running(self) -> bool:
         return not self._stop_event.is_set()
 
+    def _increment_request(self) -> bool:
+        """
+        每次請求完成後呼叫，回傳是否已達 max_requests。
+        執行緒安全，達上限時自動觸發停止。
+        """
+        if self.max_requests == 0:
+            return False
+        with self._request_lock:
+            self._request_count += 1
+            if self._request_count >= self.max_requests:
+                self._stop_event.set()
+                return True
+        return False
+
     # ── 內部 ──────────────────────────────────────────────────
 
     def _spawn_loop(self):
-        interval = 1.0 / self.spawn_rate  # 每隔多少秒產生一個 user
+        interval = 1.0 / self.spawn_rate
         for _ in itertools.repeat(None):
             if self._stop_event.is_set():
                 break
@@ -84,14 +104,13 @@ class LoadEngine:
                 if self._active_users >= self.num_users:
                     break
                 self._active_users += 1
-
             self._executor.submit(self._user_loop)
             time.sleep(interval)
 
     def _user_loop(self):
         """單一虛擬使用者的生命週期"""
-        import requests
-        session = requests.Session()
+        pool_size = max(self.num_users, self.user_class.pool_size)
+        session = _make_session(pool_size=pool_size, timeout=self.user_class.timeout)
         user = self.user_class(self.stats, session)
 
         try:
@@ -102,12 +121,15 @@ class LoadEngine:
                     task_fn()
                 except Exception:
                     pass  # 錯誤已在 _request 內記錄，繼續跑
+
+                # 每打完一筆檢查是否達到 max_requests
+                self._increment_request()
+
                 think = user._think_time()
                 if think > 0:
-                    # 分段 sleep，讓 stop_event 能及時中斷
                     deadline = time.time() + think
                     while time.time() < deadline and not self._stop_event.is_set():
-                        time.sleep(min(0.1, deadline - time.time()))
+                        time.sleep(min(0.05, deadline - time.time()))
         finally:
             try:
                 user.on_stop()

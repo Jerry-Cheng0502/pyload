@@ -8,7 +8,7 @@ import sys
 import os
 import signal
 
-from .stats import StatsCollector
+from .stats import StatsCollector, TimeSeriesCollector
 from .engine import LoadEngine
 from .console import ConsoleReporter
 from .reporter import save_html, save_json
@@ -47,17 +47,18 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 範例：
-  python -m pyload -f examples/jsonplaceholder.py -u 20 -r 5 -t 30
+  python -m pyload -f examples/db_api_example.py -u 50 -r 50 -t 60
   python -m pyload -f myscenario.py -u 100 -r 10 -t 120 --html report.html --json result.json
         """
     )
     p.add_argument("-f", "--file",       required=True,       help="情境檔案路徑 (.py)")
     p.add_argument("-u", "--users",      type=int, default=10, help="虛擬使用者數量 (預設: 10)")
-    p.add_argument("-r", "--spawn-rate", type=float, default=1, help="每秒新增使用者數 (預設: 1)")
+    p.add_argument("-r", "--spawn-rate", type=float, default=10, help="每秒新增使用者數 (預設: 1)")
     p.add_argument("-t", "--run-time",   type=float, default=0, help="執行秒數，0=無限 (預設: 0)")
     p.add_argument("--interval",         type=float, default=2.0, help="Console 更新間隔秒數 (預設: 2)")
     p.add_argument("--html",             default="report.html", help="HTML 報告路徑 (預設: report.html)")
     p.add_argument("--json",             default="",            help="JSON 報告路徑 (空=不輸出)")
+    p.add_argument("-n", "--max-requests", type=int, default=0, help="達到 N 筆請求後停止，0=不限制 (預設: 0)")
     p.add_argument("--no-html",          action="store_true",   help="不產生 HTML 報告")
     return p
 
@@ -75,17 +76,20 @@ def main():
 
     print(f"\n[PyLoad] 載入情境：{user_class.__name__}  host={host}")
     print(f"[PyLoad] 使用者={args.users}  spawn_rate={args.spawn_rate}/s  "
-          f"執行時間={'∞' if args.run_time == 0 else f'{args.run_time}s'}\n")
+          f"執行時間={'∞' if args.run_time == 0 else f'{args.run_time}s'}  "
+          f"max_requests={'∞' if args.max_requests == 0 else args.max_requests}\n")
 
     stats = StatsCollector()
+    timeseries = TimeSeriesCollector()
     engine = LoadEngine(
         user_class=user_class,
         stats=stats,
         num_users=args.users,
         spawn_rate=args.spawn_rate,
         run_time=args.run_time,
+        max_requests=args.max_requests,
     )
-    reporter = ConsoleReporter(stats, engine, interval=args.interval)
+    reporter = ConsoleReporter(stats, engine, interval=args.interval, timeseries=timeseries)
 
     def _shutdown(sig=None, frame=None):
         print("\n[PyLoad] 收到停止訊號，正在結束…")
@@ -105,7 +109,7 @@ def main():
 
         print()
         if not args.no_html:
-            save_html(stats, path=args.html, host=host)
+            save_html(stats, path=args.html, host=host, timeseries=timeseries)
         if args.json:
             save_json(stats, path=args.json)
         print("[PyLoad] 完成！")

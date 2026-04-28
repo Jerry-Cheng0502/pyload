@@ -6,7 +6,7 @@ import threading
 import time
 import sys
 
-from .stats import StatsCollector
+from .stats import StatsCollector, TimeSeriesCollector
 from .engine import LoadEngine
 
 RESET  = "\033[0m"
@@ -45,10 +45,11 @@ def _bar(value: float, max_val: float, width: int = 10) -> str:
 
 
 class ConsoleReporter:
-    def __init__(self, stats: StatsCollector, engine: LoadEngine, interval: float = 2.0):
+    def __init__(self, stats: StatsCollector, engine: LoadEngine, interval: float = 2.0, timeseries: TimeSeriesCollector = None):
         self.stats = stats
         self.engine = engine
         self.interval = interval
+        self.timeseries = timeseries
         self._thread: threading.Thread = None
         self._stop = threading.Event()
         self._last_line_count = 0
@@ -79,6 +80,9 @@ class ConsoleReporter:
         label = "FINAL REPORT" if final else "LIVE"
         elapsed = snap["elapsed_sec"]
         users = self.engine.active_users
+        # 記錄時間序列（非 final 才記，避免重複）
+        if not final and self.timeseries:
+            self.timeseries.record_tick(self.stats, users)
         lines.append(
             f"{BOLD}{CYAN}{'─'*80}{RESET}"
         )
